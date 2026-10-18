@@ -1,12 +1,26 @@
-import { contextBridge } from 'electron'
+import { contextBridge, ipcRenderer } from 'electron'
 import { electronAPI } from '@electron-toolkit/preload'
 
-// Custom APIs for renderer
-const api = {}
+const api = {
+  // Sender
+  openFileDialog: () => ipcRenderer.invoke('open-file-dialog'),
+  startServer: (filePath: string) => ipcRenderer.invoke('start-server', filePath),
+  stopServer: () => ipcRenderer.invoke('stop-server'),
 
-// Use `contextBridge` APIs to expose Electron APIs to
-// renderer only if context isolation is enabled, otherwise
-// just add to the DOM global.
+  // Receiver
+  startListening: () => ipcRenderer.invoke('start-listening'),
+  stopListening: () => ipcRenderer.invoke('stop-listening'),
+  receiveFile: (senderIP: string) => ipcRenderer.invoke('receive-file', senderIP),
+
+  // Main → Renderer push
+  onPeersUpdated: (callback: (peers: { hostname: string; ip: string }[]) => void) => {
+    ipcRenderer.on('peers-updated', (_event, peers) => callback(peers))
+  },
+  offPeersUpdated: () => {
+    ipcRenderer.removeAllListeners('peers-updated')
+  }
+}
+
 if (process.contextIsolated) {
   try {
     contextBridge.exposeInMainWorld('electron', electronAPI)

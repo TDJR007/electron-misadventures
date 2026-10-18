@@ -1,11 +1,51 @@
-import { app, shell, BrowserWindow, ipcMain } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, dialog } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
+import express from 'express'
+import * as fs from 'fs'
+import * as http from 'http'
+import * as os from 'os'
+import * as path from 'path'
+import * as dgram from 'dgram'
+
+// ─── Constants ─────────────────────────────────────────────────────────────
+
+const HTTP_PORT = 3000
+const UDP_PORT = 41234
+const BROADCAST_ADDR = '255.255.255.255'
+const BROADCAST_INTERVAL = 1000
+
+// ─── Helpers ───────────────────────────────────────────────────────────────
+
+function getLocalIP(): string {
+  const interfaces = os.networkInterfaces()
+  for (const name of Object.keys(interfaces)) {
+    for (const iface of interfaces[name] ?? []) {
+      if (iface.family === 'IPv4' && !iface.internal) {
+        return iface.address
+      }
+    }
+  }
+  return '127.0.0.1'
+}
+
+function getHostname(): string {
+  return os.hostname()
+}
+
+// ─── State ─────────────────────────────────────────────────────────────────
+
+let activeServer: http.Server | null = null
+let broadcastSocket: dgram.Socket | null = null
+let broadcastInterval: NodeJS.Timeout | null = null
+let listenerSocket: dgram.Socket | null = null
+let mainWindow: BrowserWindow | null = null
+
+// ─── Window ────────────────────────────────────────────────────────────────
 
 function createWindow(): void {
-  // Create the browser window.
-  const mainWindow = new BrowserWindow({
+  mainWindow = new BrowserWindow({
     width: 900,
     height: 670,
     show: false,
@@ -18,7 +58,7 @@ function createWindow(): void {
   })
 
   mainWindow.on('ready-to-show', () => {
-    mainWindow.show()
+    mainWindow!.show()
   })
 
   mainWindow.webContents.setWindowOpenHandler((details) => {
@@ -26,8 +66,6 @@ function createWindow(): void {
     return { action: 'deny' }
   })
 
-  // HMR for renderer base on electron-vite cli.
-  // Load the remote URL for development or the local html file for production.
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
   } else {
@@ -35,40 +73,140 @@ function createWindow(): void {
   }
 }
 
-// This method will be called when Electron has finished
-// initialization and is ready to create browser windows.
-// Some APIs can only be used after this event occurs.
+// ─── IPC Handlers ──────────────────────────────────────────────────────────
+
+// 1. Open file picker
+ipcMain.handle('open-file-dialog', async () => {
+  const result = await dialog.showOpenDialog({ properties: ['openFile'] })
+  if (result.canceled || result.filePaths.length === 0) return null
+  const filePath = result.filePaths[0]
+  return { filePath, fileName: path.basename(filePath) }
+})
+
+// 2. Start HTTP server + UDP broadcast
+ipcMain.handle('start-server', async (_event, filePath: string) => {
+  // Kill existing
+  if (activeServer) { activeServer.close(); activeServer = null }
+  if (broadcastInterval) { clearInterval(broadcastInterval); broadcastInterval = null }
+  if (broadcastSocket) { broadcastSocket.close(); broadcastSocket = null }
+
+  // HTTP server
+  const expressApp = express()
+
+  expressApp.get('/file', (_req, res) => {
+    const fileName = path.basename(filePath)
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`)
+    res.sendFile(filePath)
+  })
+
+  expressApp.get('/ping', (_req, res) => {
+    res.json({ fileName: path.basename(filePath) })
+  })
+
+  await new Promise<void>((resolve) => {
+    activeServer = expressApp.listen(HTTP_PORT, () => resolve())
+  })
+
+  // UDP broadcast
+  broadcastSocket = dgram.createSocket('udp4')
+  broadcastSocket.bind(() => {
+    broadcastSocket!.setBroadcast(true)
+    const ip = getLocalIP()
+    const hostname = getHostname()
+    const message = Buffer.from(`ZAP:${hostname}:${ip}`)
+
+    broadcastInterval = setInterval(() => {
+      broadcastSocket!.send(message, 0, message.length, UDP_PORT, BROADCAST_ADDR)
+    }, BROADCAST_INTERVAL)
+  })
+
+  return { ip: getLocalIP(), port: HTTP_PORT, hostname: getHostname() }
+})
+
+// 3. Stop server + broadcast
+ipcMain.handle('stop-server', async () => {
+  if (activeServer) { activeServer.close(); activeServer = null }
+  if (broadcastInterval) { clearInterval(broadcastInterval); broadcastInterval = null }
+  if (broadcastSocket) { broadcastSocket.close(); broadcastSocket = null }
+})
+
+// 4. Start listening for peers (receiver side)
+ipcMain.handle('start-listening', async () => {
+  if (listenerSocket) { listenerSocket.close(); listenerSocket = null }
+
+  const peers: Record<string, { hostname: string; ip: string; lastSeen: number }> = {}
+
+  listenerSocket = dgram.createSocket('udp4')
+
+  listenerSocket.on('message', (msg) => {
+    const str = msg.toString()
+    if (!str.startsWith('ZAP:')) return
+
+    const [, hostname, ip] = str.split(':')
+
+    // Ignore ourselves
+    if (ip === getLocalIP()) return
+
+    peers[ip] = { hostname, ip, lastSeen: Date.now() }
+
+    // Prune peers not seen in 3 seconds
+    const now = Date.now()
+    for (const key of Object.keys(peers)) {
+      if (now - peers[key].lastSeen > 3000) delete peers[key]
+    }
+
+    // Push updated list to renderer
+    mainWindow?.webContents.send(
+      'peers-updated',
+      Object.values(peers)
+    )
+  })
+
+  listenerSocket.bind(UDP_PORT)
+})
+
+// 5. Stop listening
+ipcMain.handle('stop-listening', async () => {
+  if (listenerSocket) { listenerSocket.close(); listenerSocket = null }
+})
+
+// 6. Receive file from a peer
+ipcMain.handle('receive-file', async (_event, senderIP: string) => {
+  const pingRes = await fetch(`http://${senderIP}:${HTTP_PORT}/ping`)
+  const { fileName } = await pingRes.json()
+
+  const { filePath: savePath, canceled } = await dialog.showSaveDialog({
+    defaultPath: fileName
+  })
+  if (canceled || !savePath) return { success: false }
+
+  const fileRes = await fetch(`http://${senderIP}:${HTTP_PORT}/file`)
+  const buffer = Buffer.from(await fileRes.arrayBuffer())
+  fs.writeFileSync(savePath, buffer)
+
+  return { success: true, savedAt: savePath }
+})
+
+// ─── App lifecycle ─────────────────────────────────────────────────────────
+
 app.whenReady().then(() => {
-  // Set app user model id for windows
   electronApp.setAppUserModelId('com.electron')
 
-  // Default open or close DevTools by F12 in development
-  // and ignore CommandOrControl + R in production.
-  // see https://github.com/alex8088/electron-toolkit/tree/master/packages/utils
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)
   })
 
-  // IPC test
-  ipcMain.on('ping', () => console.log('pong'))
-
   createWindow()
 
-  app.on('activate', function () {
-    // On macOS it's common to re-create a window in the app when the
-    // dock icon is clicked and there are no other windows open.
+  app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
 })
 
-// Quit when all windows are closed, except on macOS. There, it's common
-// for applications and their menu bar to stay active until the user quits
-// explicitly with Cmd + Q.
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    app.quit()
-  }
+  if (activeServer) activeServer.close()
+  if (broadcastInterval) clearInterval(broadcastInterval)
+  if (broadcastSocket) broadcastSocket.close()
+  if (listenerSocket) listenerSocket.close()
+  if (process.platform !== 'darwin') app.quit()
 })
-
-// In this file you can include the rest of your app's specific main process
-// code. You can also put them in separate files and require them here.
