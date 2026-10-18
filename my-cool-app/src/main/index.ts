@@ -30,6 +30,13 @@ function getLocalIP(): string {
   return '127.0.0.1'
 }
 
+function isLocalIP(ip: string): boolean {
+  const interfaces = os.networkInterfaces()
+  return Object.values(interfaces).some((networkInterfaces) =>
+    networkInterfaces?.some((iface) => iface.family === 'IPv4' && iface.address === ip)
+  )
+}
+
 function getHostname(): string {
   return os.hostname()
 }
@@ -46,11 +53,12 @@ let pushPeersToRenderer = false
 
 const udpSocket = dgram.createSocket('udp4')
 udpSocket.bind(UDP_PORT, () => {
-  udpSocket.on('message', (msg) => {
+  udpSocket.on('message', (msg, rinfo) => {
     const str = msg.toString()
     if (!str.startsWith('ZAP:')) return
-    const [, hostname, ip] = str.split(':')
-    if (ip === getLocalIP()) return
+    const [, hostname] = str.split(':')
+    const ip = rinfo.address
+    if (isLocalIP(ip)) return
 
     // Always learn hostnames
     knownPeers[ip] = hostname
@@ -166,12 +174,13 @@ ipcMain.handle('stop-server', async () => {
 // 4. Start listening — just flip on renderer pushes, socket already running
 ipcMain.handle('start-listening', async () => {
   udpSocket.removeAllListeners('message')
-  udpSocket.on('message', (msg) => {
+  udpSocket.on('message', (msg, rinfo) => {
     const str = msg.toString()
     if (!str.startsWith('ZAP:')) return
 
-    const [, hostname, ip] = str.split(':')
-    if (ip === getLocalIP()) return
+    const [, hostname] = str.split(':')
+    const ip = rinfo.address
+    if (isLocalIP(ip)) return
 
     knownPeers[ip] = hostname
     knownPeersFull[ip] = { hostname, ip, lastSeen: Date.now() }
@@ -192,8 +201,47 @@ ipcMain.handle('stop-listening', async () => {
 
 // 6. Receive file from a peer
 ipcMain.handle('receive-file', async (_event, senderIP: string) => {
-  const pingRes = await fetch(`http://${senderIP}:${HTTP_PORT}/ping`)
-  const { fileName } = await pingRes.json()
+  let pingRes: Response
+  try {
+    pingRes = await fetch(`http://${senderIP}:${HTTP_PORT}/ping`)
+  } catch (error) {
+    throw new Error(`Could not connect to ${senderIP}. Make sure the sender is sharing and both devices are on the same network.`, {
+      cause: error
+    })
+  }
+
+  if (!pingRes.ok) {
+    if (pingRes.status === 404) {
+      throw new Error(
+        `No /ping endpoint found at ${senderIP}:${HTTP_PORT}. The device is reachable, but it may be running an older Zap sender or another service on port ${HTTP_PORT}. Update/restart the sender and share the file again.`
+      )
+    }
+    throw new Error(`The sender returned HTTP ${pingRes.status} for /ping. Make sure the sender is running this app and sharing a file.`)
+  }
+
+  const contentType = pingRes.headers.get('content-type') ?? ''
+  if (!contentType.toLowerCase().includes('application/json')) {
+    throw new Error(`The sender returned ${contentType || 'an unknown content type'} instead of JSON for /ping. Make sure the sender is running this app and sharing a file.`)
+  }
+
+  let pingData: unknown
+  try {
+    pingData = await pingRes.json()
+  } catch (error) {
+    throw new Error('The sender returned invalid JSON for /ping. Make sure the sender is running the same version of this app.', {
+      cause: error
+    })
+  }
+  if (
+    typeof pingData !== 'object' ||
+    pingData === null ||
+    !('fileName' in pingData) ||
+    typeof pingData.fileName !== 'string' ||
+    pingData.fileName.length === 0
+  ) {
+    throw new Error('The sender returned an invalid file name. Make sure the sender is running the same version of this app.')
+  }
+  const { fileName } = pingData
 
   const ext = path.extname(fileName)
   const base = path.basename(fileName, ext)
@@ -205,7 +253,17 @@ ipcMain.handle('receive-file', async (_event, senderIP: string) => {
   })
   if (canceled || !savePath) return { success: false }
 
-  const fileRes = await fetch(`http://${senderIP}:${HTTP_PORT}/file`)
+  let fileRes: Response
+  try {
+    fileRes = await fetch(`http://${senderIP}:${HTTP_PORT}/file`)
+  } catch (error) {
+    throw new Error(`The connection to ${senderIP} was lost while downloading the file. Try starting the share again.`, {
+      cause: error
+    })
+  }
+  if (!fileRes.ok) {
+    throw new Error(`The sender returned HTTP ${fileRes.status} while sending the file. Try starting the share again.`)
+  }
   const buffer = Buffer.from(await fileRes.arrayBuffer())
   fs.writeFileSync(savePath, buffer)
 

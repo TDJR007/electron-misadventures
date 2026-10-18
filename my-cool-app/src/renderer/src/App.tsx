@@ -43,14 +43,18 @@ function App(): React.JSX.Element {
     setMode('receiving')
     setStatus(`Connecting to ${peer.hostname}...`)
 
-    const result = await window.api.receiveFile(peer.ip)
-
-    if (result.success) {
-      setStatus(`Saved to: ${result.savedAt}`)
-    } else {
-      setStatus('Cancelled.')
+    try {
+      const result = await window.api.receiveFile(peer.ip)
+      if (result.success) {
+        setStatus(`Saved to: ${result.savedAt}`)
+      } else {
+        setStatus('Cancelled.')
+      }
+    } catch (error) {
+      setStatus(error instanceof Error ? error.message : 'Could not receive the file.')
+    } finally {
+      setMode('idle')
     }
-    setMode('idle')
   }
 
   useEffect(() => {
@@ -186,12 +190,11 @@ function App(): React.JSX.Element {
 
       </div>
 
-      {/* Status bar */}
-      {/* {status && (
-        <div className="relative z-20 w-full text-center text-[10px] tracking-widest text-slate-500 pb-4 uppercase">
+      {status && (
+        <div role="status" className="relative z-20 w-full text-center text-[10px] tracking-widest text-slate-500 pb-4 uppercase">
           {status}
         </div>
-      )} */}
+      )}
 
     </div>
   )
