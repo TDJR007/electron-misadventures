@@ -42,17 +42,30 @@ let broadcastInterval: NodeJS.Timeout | null = null
 let mainWindow: BrowserWindow | null = null
 const knownPeers: Record<string, string> = {}
 const knownPeersFull: Record<string, { hostname: string; ip: string; lastSeen: number }> = {}
+let pushPeersToRenderer = false
 
-// Single shared UDP listener — lives for the entire app lifetime
 const udpSocket = dgram.createSocket('udp4')
 udpSocket.bind(UDP_PORT, () => {
-  // Passively learn hostnames from the moment the app starts
   udpSocket.on('message', (msg) => {
     const str = msg.toString()
     if (!str.startsWith('ZAP:')) return
     const [, hostname, ip] = str.split(':')
     if (ip === getLocalIP()) return
+
+    // Always learn hostnames
     knownPeers[ip] = hostname
+
+    // Only push to renderer when receiver is active
+    if (!pushPeersToRenderer) return
+
+    knownPeersFull[ip] = { hostname, ip, lastSeen: Date.now() }
+
+    const now = Date.now()
+    for (const key of Object.keys(knownPeersFull)) {
+      if (now - knownPeersFull[key].lastSeen > 3000) delete knownPeersFull[key]
+    }
+
+    mainWindow?.webContents.send('peers-updated', Object.values(knownPeersFull))
   })
 })
 
@@ -112,6 +125,8 @@ ipcMain.handle('start-server', async (_event, filePath: string) => {
     res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`)
     res.sendFile(filePath)
     const cleanIP = req.ip?.replace('::ffff:', '') ?? ''
+    console.log('knownPeers:', JSON.stringify(knownPeers))
+    console.log('cleanIP:', cleanIP)
     const hostname = knownPeers[cleanIP] ?? cleanIP
     mainWindow?.webContents.send('file-grabbed', { hostname })
   })
@@ -145,16 +160,6 @@ ipcMain.handle('stop-server', async () => {
   if (activeServer) { activeServer.close(); activeServer = null }
   if (broadcastInterval) { clearInterval(broadcastInterval); broadcastInterval = null }
   if (broadcastSocket) { broadcastSocket.close(); broadcastSocket = null }
-
-  // Reset to passive hostname learning
-  udpSocket.removeAllListeners('message')
-  udpSocket.on('message', (msg) => {
-    const str = msg.toString()
-    if (!str.startsWith('ZAP:')) return
-    const [, hostname, ip] = str.split(':')
-    if (ip === getLocalIP()) return
-    knownPeers[ip] = hostname
-  })
 })
 
 // 4. Start listening for peers (receiver side)
@@ -182,16 +187,7 @@ ipcMain.handle('start-listening', async () => {
 
 // 5. Stop pushing to renderer but keep socket alive
 ipcMain.handle('stop-listening', async () => {
-  udpSocket.removeAllListeners('message')
-
-  // Keep passively learning hostnames even when not in receive mode
-  udpSocket.on('message', (msg) => {
-    const str = msg.toString()
-    if (!str.startsWith('ZAP:')) return
-    const [, hostname, ip] = str.split(':')
-    if (ip === getLocalIP()) return
-    knownPeers[ip] = hostname
-  })
+  pushPeersToRenderer = false
 })
 
 // 6. Receive file from a peer
