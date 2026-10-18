@@ -41,6 +41,7 @@ let broadcastSocket: dgram.Socket | null = null
 let broadcastInterval: NodeJS.Timeout | null = null
 let listenerSocket: dgram.Socket | null = null
 let mainWindow: BrowserWindow | null = null
+const knownPeers: Record<string, string> = {} // ip → hostname
 
 // ─── Window ────────────────────────────────────────────────────────────────
 
@@ -93,10 +94,13 @@ ipcMain.handle('start-server', async (_event, filePath: string) => {
   // HTTP server
   const expressApp = express()
 
-  expressApp.get('/file', (_req, res) => {
+  expressApp.get('/file', (req, res) => {
     const fileName = path.basename(filePath)
     res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`)
     res.sendFile(filePath)
+    const cleanIP = req.ip?.replace('::ffff:', '') ?? ''
+    const hostname = knownPeers[cleanIP] ?? cleanIP
+    mainWindow?.webContents.send('file-grabbed', { hostname })
   })
 
   expressApp.get('/ping', (_req, res) => {
@@ -107,9 +111,23 @@ ipcMain.handle('start-server', async (_event, filePath: string) => {
     activeServer = expressApp.listen(HTTP_PORT, () => resolve())
   })
 
+  // Also listen for peers so we can resolve hostnames when they grab the file
+  if (!listenerSocket) {
+    listenerSocket = dgram.createSocket('udp4')
+       listenerSocket.on('message', (msg) => {
+      const str = msg.toString()
+      console.log('UDP received on sender:', str)
+      if (!str.startsWith('ZAP:')) return
+      const [, hostname, ip] = str.split(':')
+      if (ip === getLocalIP()) return
+      knownPeers[ip] = hostname
+    })
+    listenerSocket.bind(UDP_PORT)
+  }
+
   // UDP broadcast
   broadcastSocket = dgram.createSocket('udp4')
-  broadcastSocket.bind(() => {
+  broadcastSocket.bind(0, () => {
     broadcastSocket!.setBroadcast(true)
     const ip = getLocalIP()
     const hostname = getHostname()
@@ -147,6 +165,7 @@ ipcMain.handle('start-listening', async () => {
     // Ignore ourselves
     if (ip === getLocalIP()) return
 
+    knownPeers[ip] = hostname
     peers[ip] = { hostname, ip, lastSeen: Date.now() }
 
     // Prune peers not seen in 3 seconds
@@ -175,8 +194,13 @@ ipcMain.handle('receive-file', async (_event, senderIP: string) => {
   const pingRes = await fetch(`http://${senderIP}:${HTTP_PORT}/ping`)
   const { fileName } = await pingRes.json()
 
+  const ext = path.extname(fileName)
+  const base = path.basename(fileName, ext)
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+  const timestampedName = `${base}_${timestamp}${ext}`
+
   const { filePath: savePath, canceled } = await dialog.showSaveDialog({
-    defaultPath: fileName
+    defaultPath: timestampedName
   })
   if (canceled || !savePath) return { success: false }
 

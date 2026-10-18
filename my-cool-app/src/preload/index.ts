@@ -18,6 +18,12 @@ const api = {
   },
   offPeersUpdated: () => {
     ipcRenderer.removeAllListeners('peers-updated')
+  },
+  onFileGrabbed: (callback: (info: { hostname: string }) => void) => {
+    ipcRenderer.on('file-grabbed', (_event, info) => callback(info))
+  },
+  offFileGrabbed: () => {
+    ipcRenderer.removeAllListeners('file-grabbed')
   }
 }
 

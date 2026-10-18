@@ -53,6 +53,13 @@ function App(): React.JSX.Element {
     setMode('idle')
   }
 
+  useEffect(() => {
+    window.api.onFileGrabbed((info) => {
+      setStatus(`Grabbed by ${info.hostname}`)
+    })
+    return () => window.api.offFileGrabbed()
+  }, [])
+
   const handleReset = async (): Promise<void> => {
     await window.api.stopServer()
     setMode('idle')
@@ -91,15 +98,20 @@ function App(): React.JSX.Element {
           onClick={mode === 'idle' ? handleSend : undefined}
         >
           {mode === 'sending' && serverInfo ? (
-            <div className="flex flex-col items-center gap-3">
+            <div className="flex flex-col items-center gap-3 w-full px-12 overflow-hidden">
               <span className="text-sky-400/60 text-[10px] tracking-widest uppercase">broadcasting as</span>
-              <span className="text-sky-300 text-lg font-mono">{serverInfo.hostname}</span>
+              <span className="text-sky-300 text-lg font-mono truncate max-w-full">{serverInfo.hostname}</span>
               <span className="text-sky-400/40 text-[10px] font-mono">{serverInfo.ip}:{serverInfo.port}</span>
               <div className="flex gap-1 mt-1">
                 <span className="w-1 h-1 rounded-full bg-sky-400 animate-bounce [animation-delay:0ms]" />
                 <span className="w-1 h-1 rounded-full bg-sky-400 animate-bounce [animation-delay:150ms]" />
                 <span className="w-1 h-1 rounded-full bg-sky-400 animate-bounce [animation-delay:300ms]" />
               </div>
+              {status && (
+                <span className="text-[10px] text-sky-400 tracking-widest uppercase animate-pulse">
+                  {status}
+                </span>
+              )}
               <button
                 onClick={(e) => { e.stopPropagation(); handleReset() }}
                 className="mt-2 text-[10px] text-slate-600 hover:text-red-400 transition-colors tracking-widest uppercase"
@@ -161,7 +173,7 @@ function App(): React.JSX.Element {
               )}
 
               {status && mode === 'idle' && (
-                <span className="text-[10px] tracking-[0.2em] uppercase text-violet-400/40">{status}</span>
+                <span className="text-[10px] text-sky-400 tracking-widest uppercase animate-pulse">{status}</span>
               )}
               {!hovered && !status && (
                 <span className="text-[10px] tracking-[0.2em] uppercase text-slate-600">
