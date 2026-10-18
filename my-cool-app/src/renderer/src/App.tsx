@@ -1,34 +1,20 @@
-import Versions from './components/Versions'
-import electronLogo from './assets/electron.svg'
-
 function App(): React.JSX.Element {
-  const ipcHandle = (): void => window.electron.ipcRenderer.send('ping')
-
   return (
-    <>
-      <img alt="logo" className="logo" src={electronLogo} />
-      <div className="creator">Powered by electron-vite</div>
-      <div className="text">
-        Build an Electron app with <span className="react">React</span>
-        &nbsp;and <span className="ts">TypeScript</span>
-      </div>
-      <p className="tip">
-        Please try pressing <code>F12</code> to open the devTool
+    <div data-theme="synthwave" className="min-h-screen w-full flex flex-col items-center justify-center gap-6 p-8">
+      
+      <h1 className="text-5xl font-bold text-primary tracking-widest uppercase">
+        DropBeam
+      </h1>
+      <p className="text-secondary text-sm tracking-widest">
+        Local file transfer. No cloud. No nonsense.
       </p>
-      <div className="actions">
-        <div className="action">
-          <a href="https://electron-vite.org/" target="_blank" rel="noreferrer">
-            Documentation
-          </a>
-        </div>
-        <div className="action">
-          <a target="_blank" rel="noreferrer" onClick={ipcHandle}>
-            Send IPC
-          </a>
-        </div>
+
+      <div className="flex gap-4 mt-4">
+        <button className="btn btn-primary btn-lg">Send a File</button>
+        <button className="btn btn-outline btn-secondary btn-lg">Receive</button>
       </div>
-      <Versions></Versions>
-    </>
+
+    </div>
   )
 }
 
