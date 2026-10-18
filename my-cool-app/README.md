@@ -1,6 +1,14 @@
 # my-cool-app
 
-An Electron application with React and TypeScript
+An Electron application with React and TypeScript for LAN file sharing.
+
+- UDP peer discovery with hostname broadcasting
+- Single shared UDP socket with flag-based renderer push
+- HTTP file server via Express (sender side)
+- Native OS file picker + save dialog
+- Timestamped filenames to prevent overwrites
+- Sender notified by hostname when file is grabbed
+- Split-screen synthwave UI with lightning seam divider
 
 ## Recommended IDE Setup
 
