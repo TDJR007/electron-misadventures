@@ -190,11 +190,11 @@ function App(): React.JSX.Element {
 
       </div>
 
-      {status && (
+      {/* {status && (
         <div role="status" className="relative z-20 w-full text-center text-[10px] tracking-widest text-slate-500 pb-4 uppercase">
           {status}
         </div>
-      )}
+      )} */}
 
     </div>
   )
