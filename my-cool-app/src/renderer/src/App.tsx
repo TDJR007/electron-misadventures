@@ -1,18 +1,20 @@
+
 import { useState, useEffect } from 'react'
 
-type Mode = 'idle' | 'sending' | 'receiving'
 type Peer = { hostname: string; ip: string }
 
 function App(): React.JSX.Element {
   const [hovered, setHovered] = useState<'send' | 'receive' | null>(null)
-  const [mode, setMode] = useState<Mode>('idle')
-  const [status, setStatus] = useState<string>('')
+  const [isSending, setIsSending] = useState(false)
+  const [sendStatus, setSendStatus] = useState('')
+  const [isReceiving, setIsReceiving] = useState(false)
+  const [receiveStatus, setReceiveStatus] = useState('')
   const [serverInfo, setServerInfo] = useState<{ ip: string; port: number; hostname: string } | null>(null)
   const [peers, setPeers] = useState<Peer[]>([])
 
   // Start listening for peers when receive side is hovered or active
   useEffect(() => {
-    if (hovered === 'receive' || mode === 'receiving') {
+    if (hovered === 'receive' || isReceiving) {
       window.api.startListening()
       window.api.onPeersUpdated((updatedPeers) => setPeers(updatedPeers))
     } else {
@@ -25,49 +27,53 @@ function App(): React.JSX.Element {
       window.api.stopListening()
       window.api.offPeersUpdated()
     }
-  }, [hovered, mode])
+  }, [hovered, isReceiving])
 
   const handleSend = async (): Promise<void> => {
     const file = await window.api.openFileDialog()
     if (!file) return
 
-    setStatus(`Starting server...`)
-    setMode('sending')
-
-    const info = await window.api.startServer(file.filePath)
-    setServerInfo(info)
-    setStatus(`Sharing ${file.fileName}`)
+    setIsSending(true)
+    setSendStatus('Starting server...')
+    try {
+      const info = await window.api.startServer(file.filePath)
+      setServerInfo(info)
+      setSendStatus(`Sharing ${file.fileName}`)
+    } catch (error) {
+      setIsSending(false)
+      setSendStatus(error instanceof Error ? error.message : 'Could not start sharing.')
+    }
   }
 
   const handleReceive = async (peer: Peer): Promise<void> => {
-    setMode('receiving')
-    setStatus(`Connecting to ${peer.hostname}...`)
+    setIsReceiving(true)
+    setReceiveStatus(`Connecting to ${peer.hostname}...`)
 
     try {
       const result = await window.api.receiveFile(peer.ip)
       if (result.success) {
-        setStatus(`Saved to: ${result.savedAt}`)
+        setReceiveStatus(`Saved to: ${result.savedAt}`)
       } else {
-        setStatus('Cancelled.')
+        setReceiveStatus('Cancelled.')
       }
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : 'Could not receive the file.')
+      setReceiveStatus(error instanceof Error ? error.message : 'Could not receive the file.')
     } finally {
-      setMode('idle')
+      setIsReceiving(false)
     }
   }
 
   useEffect(() => {
     window.api.onFileGrabbed((info) => {
-      setStatus(`Grabbed by ${info.hostname}`)
+      setSendStatus(`Grabbed by ${info.hostname}`)
     })
     return () => window.api.offFileGrabbed()
   }, [])
 
   const handleReset = async (): Promise<void> => {
     await window.api.stopServer()
-    setMode('idle')
-    setStatus('')
+    setIsSending(false)
+    setSendStatus('')
     setServerInfo(null)
   }
 
@@ -76,9 +82,9 @@ function App(): React.JSX.Element {
 
       {/* Ambient glows */}
       <div className={`absolute inset-0 pointer-events-none transition-opacity duration-700 bg-gradient-to-r from-sky-500/10 via-sky-500/2 to-transparent
-        ${hovered === 'send' || mode === 'sending' ? 'opacity-100' : 'opacity-0'}`} />
+        ${hovered === 'send' || isSending ? 'opacity-100' : 'opacity-0'}`} />
       <div className={`absolute inset-0 pointer-events-none transition-opacity duration-700 bg-gradient-to-l from-violet-500/10 via-violet-500/2 to-transparent
-        ${hovered === 'receive' || mode === 'receiving' ? 'opacity-100' : 'opacity-0'}`} />
+        ${hovered === 'receive' || isReceiving ? 'opacity-100' : 'opacity-0'}`} />
 
       {/* Lightning seam */}
       <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none z-10">
@@ -99,29 +105,37 @@ function App(): React.JSX.Element {
           onMouseEnter={() => setHovered('send')}
           onMouseLeave={() => setHovered(null)}
           className="flex-1 h-full flex flex-col items-center justify-center gap-4 cursor-pointer group"
-          onClick={mode === 'idle' ? handleSend : undefined}
+          onClick={!isSending ? handleSend : undefined}
         >
-          {mode === 'sending' && serverInfo ? (
+          {isSending ? (
             <div className="flex flex-col items-center gap-3 w-full px-12 overflow-hidden">
-              <span className="text-sky-400/60 text-[10px] tracking-widest uppercase">broadcasting as</span>
-              <span className="text-sky-300 text-lg font-mono truncate max-w-full">{serverInfo.hostname}</span>
-              <span className="text-sky-400/40 text-[10px] font-mono">{serverInfo.ip}:{serverInfo.port}</span>
-              <div className="flex gap-1 mt-1">
-                <span className="w-1 h-1 rounded-full bg-sky-400 animate-bounce [animation-delay:0ms]" />
-                <span className="w-1 h-1 rounded-full bg-sky-400 animate-bounce [animation-delay:150ms]" />
-                <span className="w-1 h-1 rounded-full bg-sky-400 animate-bounce [animation-delay:300ms]" />
-              </div>
-              {status && (
+              {serverInfo ? (
+                <>
+                  <span className="text-sky-400/60 text-[10px] tracking-widest uppercase">broadcasting as</span>
+                  <span className="text-sky-300 text-lg font-mono truncate max-w-full">{serverInfo.hostname}</span>
+                  <span className="text-sky-400/40 text-[10px] font-mono">{serverInfo.ip}:{serverInfo.port}</span>
+                  <div className="flex gap-1 mt-1">
+                    <span className="w-1 h-1 rounded-full bg-sky-400 animate-bounce [animation-delay:0ms]" />
+                    <span className="w-1 h-1 rounded-full bg-sky-400 animate-bounce [animation-delay:150ms]" />
+                    <span className="w-1 h-1 rounded-full bg-sky-400 animate-bounce [animation-delay:300ms]" />
+                  </div>
+                </>
+              ) : (
+                <span className="text-sky-400/60 text-[10px] tracking-widest uppercase">Starting share...</span>
+              )}
+              {sendStatus && (
                 <span className="text-[10px] text-sky-400 tracking-widest uppercase animate-pulse">
-                  {status}
+                  {sendStatus}
                 </span>
               )}
-              <button
-                onClick={(e) => { e.stopPropagation(); handleReset() }}
-                className="mt-2 text-[10px] text-slate-600 hover:text-red-400 transition-colors tracking-widest uppercase"
-              >
-                Cancel
-              </button>
+              {serverInfo && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); handleReset() }}
+                  className="mt-2 text-[10px] text-slate-600 hover:text-red-400 transition-colors tracking-widest uppercase"
+                >
+                  Cancel
+                </button>
+              )}
             </div>
           ) : (
             <div className="flex flex-col items-center gap-2 transition-transform duration-300 ease-out group-hover:scale-105">
@@ -133,6 +147,9 @@ function App(): React.JSX.Element {
                 ${hovered === 'send' ? 'text-sky-400/70 opacity-100' : 'opacity-0'}`}>
                 Click to pick a file
               </span>
+              {sendStatus && (
+                <span className="text-[10px] text-white tracking-widest uppercase">{sendStatus}</span>
+              )}
             </div>
           )}
         </section>
@@ -143,7 +160,7 @@ function App(): React.JSX.Element {
           onMouseLeave={() => setHovered(null)}
           className="flex-1 h-full flex flex-col items-center justify-center gap-4 group"
         >
-          {mode === 'receiving' ? (
+          {isReceiving ? (
             <span className="text-violet-400 text-sm tracking-widest uppercase animate-pulse">
               Receiving...
             </span>
@@ -176,10 +193,10 @@ function App(): React.JSX.Element {
                 </div>
               )}
 
-              {status && mode === 'idle' && (
-                <span className="text-[10px] text-sky-400 tracking-widest uppercase animate-pulse">{status}</span>
+              {receiveStatus && !isReceiving && (
+                <span className="text-[10px] text-white tracking-widest uppercase animate-pulse">{receiveStatus}</span>
               )}
-              {!hovered && !status && (
+              {!hovered && !receiveStatus && (
                 <span className="text-[10px] tracking-[0.2em] uppercase text-slate-600">
                   Hover to scan
                 </span>
